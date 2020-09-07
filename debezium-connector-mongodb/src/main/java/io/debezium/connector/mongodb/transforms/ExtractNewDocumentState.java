@@ -61,6 +61,8 @@ import io.debezium.util.Strings;
  */
 public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Transformation<R> {
 
+    private String addFieldsPrefix;
+
     public enum ArrayEncoding implements EnumeratedValue {
         ARRAY("array"),
         DOCUMENT("document");
@@ -299,7 +301,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             }
 
             if (addSourceFields != null) {
-                addSourceFieldsSchema(addSourceFields, record, valueSchemaBuilder);
+                addSourceFieldsSchema(addFieldsPrefix,addSourceFields, record, valueSchemaBuilder);
             }
 
             if (!additionalFields.isEmpty()) {
@@ -322,7 +324,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             }
 
             if (addSourceFields != null) {
-                addSourceFieldsValue(addSourceFields, record, finalValueStruct);
+                addSourceFieldsValue(addFieldsPrefix, addSourceFields, record, finalValueStruct);
             }
 
             if (!additionalFields.isEmpty()) {
@@ -340,14 +342,14 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         return newRecord;
     }
 
-    private void addSourceFieldsSchema(List<String> addSourceFields, R originalRecord, SchemaBuilder valueSchemaBuilder) {
+    private void addSourceFieldsSchema(String fieldPrefix, List<String> addSourceFields,
+        R originalRecord, SchemaBuilder valueSchemaBuilder) {
         Schema sourceSchema = originalRecord.valueSchema().field("source").schema();
         for (String sourceField : addSourceFields) {
             if (sourceSchema.field(sourceField) == null) {
                 throw new ConfigException("Source field specified in 'add.source.fields' does not exist: " + sourceField);
             }
-            valueSchemaBuilder.field(ExtractNewRecordStateConfigDefinition.METADATA_FIELD_PREFIX + sourceField,
-                    sourceSchema.field(sourceField).schema());
+            valueSchemaBuilder.field(fieldPrefix + sourceField, sourceSchema.field(sourceField).schema());
         }
     }
 
@@ -358,11 +360,10 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         }
     }
 
-    private void addSourceFieldsValue(List<String> addSourceFields, R originalRecord, Struct valueStruct) {
+    private void addSourceFieldsValue(String fieldPrefix, List<String> addSourceFields, R originalRecord, Struct valueStruct) {
         Struct sourceValue = ((Struct) originalRecord.value()).getStruct("source");
         for (String sourceField : addSourceFields) {
-            valueStruct.put(ExtractNewRecordStateConfigDefinition.METADATA_FIELD_PREFIX + sourceField,
-                    sourceValue.get(sourceField));
+            valueStruct.put(fieldPrefix + sourceField, sourceValue.get(sourceField));
         }
     }
 
@@ -487,8 +488,11 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
 
         addSourceFields = determineAdditionalSourceField(config.getString(ADD_SOURCE_FIELDS));
 
-        additionalHeaders = FieldReference.fromConfiguration(config.getString(ExtractNewRecordStateConfigDefinition.ADD_HEADERS));
-        additionalFields = FieldReference.fromConfiguration(config.getString(ExtractNewRecordStateConfigDefinition.ADD_FIELDS));
+        addFieldsPrefix = config.getString(ExtractNewRecordStateConfigDefinition.ADD_FIELDS_PREFIX);
+        String addHeadersPrefix = config
+            .getString(ExtractNewRecordStateConfigDefinition.ADD_HEADERS_PREFIX);
+        additionalHeaders = FieldReference.fromConfiguration(addFieldsPrefix, config.getString(ExtractNewRecordStateConfigDefinition.ADD_HEADERS));
+        additionalFields = FieldReference.fromConfiguration(addHeadersPrefix, config.getString(ExtractNewRecordStateConfigDefinition.ADD_FIELDS));
 
         flattenStruct = config.getBoolean(FLATTEN_STRUCT);
         delimiter = config.getString(DELIMITER);
@@ -535,17 +539,22 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
         private final String field;
 
         /**
-         * The name for the outgoing attribute/field, e.g. "__op" or "__source_ts_ms".
+         * The prefix for the new field name.
+         */
+        private final String prefix;
+        /**
+         * The name for the outgoing attribute/field, e.g. "__op" or "__source_ts_ms" when the prefix is "__"
          */
         private final String newFieldName;
 
-        private FieldReference(String field) {
+        private FieldReference(String prefix, String field) {
+            this.prefix = prefix;
             String[] parts = FIELD_SEPARATOR.split(field);
 
             if (parts.length == 1) {
                 this.struct = determineStruct(parts[0]);
                 this.field = parts[0];
-                this.newFieldName = ExtractNewRecordStateConfigDefinition.METADATA_FIELD_PREFIX + field;
+                this.newFieldName = prefix + field;
             }
             else if (parts.length == 2) {
                 this.struct = parts[0];
@@ -555,7 +564,7 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
                 }
 
                 this.field = parts[1];
-                this.newFieldName = ExtractNewRecordStateConfigDefinition.METADATA_FIELD_PREFIX + this.struct + "_" + this.field;
+                this.newFieldName = prefix + this.struct + "_" + this.field;
             }
             else {
                 throw new IllegalArgumentException("Unexpected field value: " + field);
@@ -579,14 +588,14 @@ public class ExtractNewDocumentState<R extends ConnectRecord<R>> implements Tran
             }
         }
 
-        static List<FieldReference> fromConfiguration(String addHeadersConfig) {
+        static List<FieldReference> fromConfiguration(String fieldPrefix, String addHeadersConfig) {
             if (Strings.isNullOrEmpty(addHeadersConfig)) {
                 return Collections.emptyList();
             }
             else {
                 return Arrays.stream(addHeadersConfig.split(","))
                         .map(String::trim)
-                        .map(FieldReference::new)
+                        .map(field -> new FieldReference(fieldPrefix, field))
                         .collect(Collectors.toList());
             }
         }
